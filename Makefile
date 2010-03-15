@@ -1,6 +1,6 @@
 include $(GOROOT)/src/Make.$(GOARCH)
 
-TARG=ChangeMe
+TARG=ChangeMe.app
 GOFILES=\
 	main.go\
 
