@@ -60,9 +60,9 @@ func main() {
 	// This Aggregates the RectPrismStruct into CardboardBox
 	var rprism Solid = cbox
 	//rprism = cbox
-	fmt.Printf("Volume: %f\n", rprism.Volume())
-	fmt.Printf("Volume: %f\n", rprism.SurfaceArea())
+	fmt.Printf("      Volume: %f\n", rprism.Volume())
+	fmt.Printf("Surface Area: %f\n", rprism.SurfaceArea())
 	rprism = obox
-	fmt.Printf("Volume: %f\n", rprism.Volume())
-	fmt.Printf("Volume: %f\n", rprism.SurfaceArea())
+	fmt.Printf("      Volume: %f\n", rprism.Volume())
+	fmt.Printf("Surface Area: %f\n", rprism.SurfaceArea())
 }
