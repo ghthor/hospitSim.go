@@ -44,6 +44,9 @@ func (this *OpenCardboardBox) SurfaceArea() float {
 
 func main() {
 
+	fmt.Printf("\n\n");
+
+
 	cbox := new(CardboardBox)
 	cbox.l = 2
 	cbox.w = 4
@@ -65,4 +68,5 @@ func main() {
 	rprism = obox
 	fmt.Printf("      Volume: %f\n", rprism.Volume())
 	fmt.Printf("Surface Area: %f\n", rprism.SurfaceArea())
+	fmt.Printf("\n\n");
 }
