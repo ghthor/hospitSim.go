@@ -42,7 +42,7 @@ func (this *OpenCardboardBox) SurfaceArea() float {
 	return(this.CardboardBox.SurfaceArea() + 2 * (this.l * this.h) + 2 * (this.w * this.h))
 }
 
-func main() {
+func main() int {
 
 	fmt.Printf("\n\n");
 
@@ -69,4 +69,5 @@ func main() {
 	fmt.Printf("      Volume: %f\n", rprism.Volume())
 	fmt.Printf("Surface Area: %f\n", rprism.SurfaceArea())
 	fmt.Printf("\n\n");
+	return 0;
 }
