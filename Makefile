@@ -1,6 +1,6 @@
 include $(GOROOT)/src/Make.inc
 
-TARG=ChangeMe.app
+TARG=hospitSim.app
 GOFILES=\
 	main.go\
 
