@@ -486,13 +486,18 @@ func (h *Hospital) FreeDoctor() *Doctor {
     return nil
 }
 
-func (h *Hospital) FreeNurse() *Nurse {
+func (h *Hospital) FreeNurses() []*Nurse {
     idleNurses := make([]*Nurse, 0, len(h.Nurses))
     for _, nurse := range h.Nurses {
         if nurse.Status == "Idle" {
             idleNurses = append(idleNurses, nurse)
         }
     }
+    return idleNurses
+}
+
+func (h *Hospital) FreeNurse() *Nurse {
+    idleNurses := h.FreeNurses()
     if len(idleNurses) > 0 {
         return idleNurses[rand.Intn(len(idleNurses))]
     }
@@ -518,20 +523,14 @@ func (h *Hospital) NurseFreed(n *Nurse) {
     if p := h.WaitingRoom.Next(); p != nil {
         // Add any other Idle Nurses into the Lottery
         // This isn't Round Robin
-        idleNurses := make([]*Nurse, 0, len(h.Nurses))
+        idleNurses := h.FreeNurses()
         idleNurses = append(idleNurses, n)
-        for _, nurse := range h.Nurses {
-            if nurse.Status == "Idle" {
-                idleNurses = append(idleNurses, nurse)
-            }
-        }
         nurse := idleNurses[rand.Intn(len(idleNurses))]
         if nurse != n {
             // If the Random Nurse from the Idle Pool wasn't
             // The newly Freed one we must put it in Idle state
             n.SetNextState("Idle")
         }
-
         h.TimeLine.PushFutureEvent(NewNurseFreed(nurse, p, h.TimeLine.Now))
     } else {
         // NO Patients waiting, this nurse is freed to play minecraft
