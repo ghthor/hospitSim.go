@@ -31,17 +31,17 @@ type TimeSpan struct {
     TimeLine *TimeLine
 }
 
-func (t TimeSpan) Total() float64 {
+func (t *TimeSpan) Total() float64 {
     if t.IsLive { t.Ended = t.TimeLine.Now; }
     return float64(t.Ended - t.Began);
 }
 
-func (t TimeSpan) ElapsedTime() float64 {
+func (t *TimeSpan) ElapsedTime() float64 {
     if t.IsLive { t.Ended = t.TimeLine.Now; }
     return float64(t.Ended - t.Began);
 }
 
-func (t TimeSpan) DateOccursDuring(date Date) bool {
+func (t *TimeSpan) DateOccursDuring(date Date) bool {
     if t.IsLive { t.Ended = t.TimeLine.Now; }
     return (t.Began <= date && date <= t.Ended)
 }
@@ -59,51 +59,61 @@ func LogEvent(e Event) string {
 // Type = [Busy, Idle]
 type State struct {
     Status string
-    TimeSpan
+    *TimeSpan
 }
 
-func (s State) Finalize() State {
+func (s *State) Finalize() *State {
     s.IsLive = false
     s.Ended = s.TimeLine.Now
     return s
 }
 
 type Sim struct {
-    State
+    *State
     History *list.List
 }
 
-func (s Sim) SetNextState(status string) {
+func (s *Sim) SetNextState(status string) {
     s.State = s.State.Finalize()
     //Add the old state to the History
     s.History.PushFront(s.State)
-    s.State = State{status, TimeSpan{Began: s.State.Ended, Ended: s.State.Ended, TimeLine: s.TimeLine}}
+    s.State = &State{status, &TimeSpan{Began: s.State.Ended, Ended: s.State.Ended, TimeLine: s.TimeLine}}
+}
+
+func (s *Sim) TotalUp() (map[string]float64) {
+    totals := make(map[string]float64)
+    for e := s.History.Front(); e.Next() != nil; e = e.Next() {
+        state := e.Value.(*State)
+        totals[state.Status] = totals[state.Status] + state.ElapsedTime()
+    }
+    return totals
 }
 
 type Staff struct {
-    Sim
+    *Sim
     PatientsProcessed uint
 }
 
 type Nurse Staff
 func NewNurse(h *Hospital) *Nurse {
-    n := &Nurse{ Sim{ State{"Idle", TimeSpan{Began: h.Now(), TimeLine: h.TimeLine}}, list.New()}, 0}
+    n := &Nurse{ &Sim{ &State{"Idle", &TimeSpan{Began: h.Now(), TimeLine: h.TimeLine}}, list.New()}, 0}
     return n
 }
 type Doctor Staff
 func NewDoctor(h *Hospital) *Doctor {
-    n := &Doctor{ Sim{ State{"Idle", TimeSpan{Began: h.Now(), TimeLine: h.TimeLine}}, list.New()}, 0}
+    n := &Doctor{ &Sim{ &State{"Idle", &TimeSpan{Began: h.Now(), TimeLine: h.TimeLine}}, list.New()}, 0}
     return n
 }
 
 type Patient struct {
-    Sim
+    *Sim
     Hospital *Hospital
     ProcessingTime float64
     Priority int
 }
+
 func NewPatient(arrivalDate Date, hospital *Hospital) *Patient {
-    p := &Patient{ Sim{ State{"Arriving", TimeSpan{ Began: arrivalDate, TimeLine: hospital.TimeLine}}, list.New()}, hospital, rand.Float64() * 60 + 1, rand.Intn(NUM_PRIORITIES)}
+    p := &Patient{ &Sim{ &State{"Arriving", &TimeSpan{ Began: arrivalDate, TimeLine: hospital.TimeLine}}, list.New()}, hospital, rand.Float64() * 60 + 1, rand.Intn(NUM_PRIORITIES)}
     return p
 }
 
@@ -143,7 +153,7 @@ func (e NurseFreed) Date() Date { return e.date; }
 func (e NurseFreed) Execute(h *Hospital) {
     //Check WaitingRoom and assign a Nurse
     //e.Nurse.SetNextState("Idle")
-    h.AssignDoctor(e.Patient)
+    h.AssignDoctorToPatient(e.Patient)
     h.NurseFreed(e.Nurse)
 }
 func (e NurseFreed) String() string {
@@ -160,13 +170,14 @@ const DoctorFreedEvent = "DoctorFreed"
 // Nurse Processing Logic
 func NewDoctorFreed(d *Doctor, p *Patient, now Date) *DoctorFreed {
     d.SetNextState("Busy")
-    p.SetNextState("WithNurse")
+    p.SetNextState("WithDoctor")
     return &DoctorFreed{d, p, Date(float64(now) + (p.ProcessingTime*.25))}
 }
 func (e DoctorFreed) Type() string { return DoctorFreedEvent; }
 func (e DoctorFreed) Date() Date { return e.date; }
 func (e DoctorFreed) Execute(h *Hospital) {
-    //Check WaitingForDoctor and assign a Doctor
+    e.Patient.SetNextState("Finished")
+    h.DoctorFreed(e.Doctor)
 }
 func (e DoctorFreed) String() string {
     return LogEvent(e)
@@ -501,13 +512,18 @@ func (h *Hospital) StartSimulation() chan *Hospital {
     return simCompleted
 }
 
-func (h *Hospital) FreeDoctor() *Doctor {
+func (h *Hospital) FreeDoctors() []*Doctor {
     idleDocs := make([]*Doctor, 0, len(h.Doctors))
     for _, doc := range h.Doctors {
         if doc.Status == "Idle" {
             idleDocs = append(idleDocs, doc)
         }
     }
+    return idleDocs
+}
+
+func (h *Hospital) FreeDoctor() *Doctor {
+    idleDocs := h.FreeDoctors()
     if len(idleDocs) > 0 {
         return idleDocs[rand.Intn(len(idleDocs))]
     }
@@ -532,7 +548,7 @@ func (h *Hospital) FreeNurse() *Nurse {
     return nil
 }
 
-func (h *Hospital) AssignDoctor(p *Patient) {
+func (h *Hospital) AssignDoctorToPatient(p *Patient) {
     now := h.TimeLine.Now
     if doc := h.FreeDoctor(); doc != nil {
         doc.SetNextState("Busy")
@@ -543,6 +559,28 @@ func (h *Hospital) AssignDoctor(p *Patient) {
         // Put the Patient in Waiting
         p.SetNextState("WaitingForDoctor")
         h.WaitingForDoctor.PushBack(p)
+    }
+}
+
+func (h *Hospital) DoctorFreed(d *Doctor) {
+    if h.WaitingForDoctor.Len() > 0 {
+        //There is a Patient Waiting
+        idleDoctors := h.FreeDoctors()
+        idleDoctors = append(idleDoctors, d)
+        doc := idleDoctors[rand.Intn(len(idleDoctors))]
+        if doc != d {
+            // If the Random Doctor from the Idle Pool wasn't
+            // The newly Freed one we must put it in Idle state
+            d.SetNextState("Idle")
+        }
+        ele := h.WaitingForDoctor.Front()
+        // Get the Next Patient
+        p := ele.Value.(*Patient)
+        h.WaitingForDoctor.Remove(ele)
+        h.TimeLine.PushFutureEvent(NewDoctorFreed(doc, p, h.TimeLine.Now))
+    } else {
+        // No Patients Waiting, idleing Doctor d
+        d.SetNextState("Idle")
     }
 }
 
@@ -596,6 +634,13 @@ func main() {
     h = <-simComplete
     fmt.Println("Simulation Completed....")
 
+    cdata := make([](map[string]float64), len(h.Patients))
+    for i := 0; i < len(h.Patients); i++ {
+        cdata[i] = h.Patients[i].TotalUp()
+    }
+
+    fmt.Println(cdata)
+
     wd, err := os.Getwd();
     if err != nil { fmt.Println("Errored when getting Working Directory", err); return }
 
@@ -606,7 +651,7 @@ func main() {
     http.Handle("/", http.FileServer(wd, ""))
     //http.HandleFunc("/", http.HandlerFunc(HandleIndex))
 
-    err = http.ListenAndServe(":6060", nil);
+    //err = http.ListenAndServe(":6060", nil);
 
     if err != nil { fmt.Println("ERROR:", err); }
 
