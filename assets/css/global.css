@@ -1,0 +1,28 @@
+body {
+  background-color: #EF9CCE;
+}
+
+*.centered {
+  display: table;
+  margin: auto;
+}
+
+#jsonHitbox {
+  width: 600px;
+  height: 600px;
+  max-width: 600px;
+  display: block;
+  margin: auto;
+  margin-top: 10px;
+  padding: 5px;
+}
+
+#c {
+  margin: auto;
+  padding: auto;
+  border: 5px solid #9CCEEF;
+  background-color: #E79CEF;
+  /*position: absolute;
+  top: 0;
+  left: 0;*/
+}

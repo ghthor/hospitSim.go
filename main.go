@@ -1,9 +1,11 @@
 package main
 
 import (
+    "os"
 	"fmt"
     "container/list"
     "math"
+    "http"
 	//"flag"
     //"os"
     //"io/ioutil"
@@ -51,7 +53,7 @@ type Event interface {
 }
 
 func LogEvent(e Event) string {
-    return fmt.Sprintf("Event: %v \t\t\t%s",float64(e.Date()),e.Type())
+    return fmt.Sprintf("Event: %8.2f \t\t\t%s",float64(e.Date()),e.Type())
 }
 
 // Type = [Busy, Idle]
@@ -587,11 +589,25 @@ func init() {
 }
 
 func main() {
-    h := NewHospital(10, 1, 1)
+    h := NewHospital(60, 1, 1)
 
     fmt.Println("Running the Sim....")
     simComplete := h.StartSimulation()
     h = <-simComplete
     fmt.Println("Simulation Completed....")
-    //fmt.Println(h.TimeLine)
+
+    wd, err := os.Getwd();
+    if err != nil { fmt.Println("Errored when getting Working Directory", err); return }
+
+    //indexHtml, err := ioutil.ReadFile(wd + "/assets/index.html")
+    //if err != nil { fmt.Println("ERROR:", err); return; }
+
+    http.Handle("/assets/", http.FileServer(wd, ""))
+    http.Handle("/", http.FileServer(wd, ""))
+    //http.HandleFunc("/", http.HandlerFunc(HandleIndex))
+
+    err = http.ListenAndServe(":6060", nil);
+
+    if err != nil { fmt.Println("ERROR:", err); }
+
 }
