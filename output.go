@@ -34,11 +34,14 @@ type Table struct {
 }
 
 func compilePage(patients []*Patient) string {
+
+    fmt.Println("LOG: Totaling the Patients Information")
     cdata := make([](map[string]float64), len(patients))
     for i := 0; i < len(patients); i++ {
         cdata[i] = patients[i].TotalUp()
     }
 
+    fmt.Println("LOG: Coupling Data for the Template")
     n := len(cdata)
     tplData := &PatientsOutput{make([]string, n), make([]float64, n), make([]float64, n), make([]float64, n), make([]float64, n)}
     for i := 0; i < len(cdata); i++ {
@@ -49,11 +52,13 @@ func compilePage(patients []*Patient) string {
         tplData.WithNurse[i] = cdata[i]["WithNurse"]
     }
 
+    fmt.Println("LOG: Executing the Table Template")
     b := bytes.NewBuffer(make([]uint8,0,4096))
     err := PatientsTable.Execute(b, tplData)
     if err != nil { fmt.Println("ERROR: Applying PatientsTable template", err); return ""; }
 
 
+    fmt.Println("LOG: Executing the Page")
     Table := map[string]string { "Table": b.String() }
     b = bytes.NewBuffer(make([]uint8,0,4096))
     err = PatientsPage.Execute(b, Table)
