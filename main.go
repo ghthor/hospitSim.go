@@ -50,6 +50,10 @@ type Event interface {
     Execute(*Hospital)
 }
 
+func LogEvent(e Event) string {
+    return fmt.Sprintf("Event: %v \t\t\t%s",float64(e.Date()),e.Type())
+}
+
 // Type = [Busy, Idle]
 type State struct {
     Status string
@@ -104,12 +108,14 @@ type PatientArrives Date
 const PatientArrivesEvent = "PatientArrives"
 func (e PatientArrives) Type() string { return PatientArrivesEvent; }
 func (e PatientArrives) String() string {
-    return fmt.Sprintf("Event: %v \t\t\t%s",float64(e),e.Type())
+    return LogEvent(e)
 }
 func (e PatientArrives) Date() Date { return Date(e); }
 func (e PatientArrives) Execute(h *Hospital) {
+    // Patients State during WaitingRoom phase is Arriving....
+    // TODO: Change this ^
     p := NewPatient(Date(e), h)
-    h.WaitingRoom.AddPatient(p)
+    h.WaitingRoom.AddPatient(p, h)
     h.Patients = append(h.Patients, p)
 }
 
@@ -120,19 +126,46 @@ type NurseFreed struct {
     date Date
 }
 const NurseFreedEvent = "NurseFreed"
+
+// Nurse Processing Logic
+func NewNurseFreed(n *Nurse, p *Patient, now Date) *NurseFreed {
+    n.SetNextState("Busy")
+    p.SetNextState("WithNurse")
+    return &NurseFreed{n, p, Date(float64(now) + (p.ProcessingTime*.75))}
+}
 func (e NurseFreed) Type() string { return NurseFreedEvent; }
 func (e NurseFreed) Date() Date { return e.date; }
-func (e NurseFreed) Execute(h *Hospital) {}
+func (e NurseFreed) Execute(h *Hospital) {
+    //Check WaitingRoom and assign a Nurse
+    //e.Nurse.SetNextState("Idle")
+    h.AssignDoctor(e.Patient)
+    h.NurseFreed(e.Nurse)
+}
+func (e NurseFreed) String() string {
+    return LogEvent(e)
+}
 
 //
 type DoctorFreed struct {
-    date Date
-    Patient *Patient
     Doctor *Doctor
+    Patient *Patient
+    date Date
 }
 const DoctorFreedEvent = "DoctorFreed"
+// Nurse Processing Logic
+func NewDoctorFreed(d *Doctor, p *Patient, now Date) *DoctorFreed {
+    d.SetNextState("Busy")
+    p.SetNextState("WithNurse")
+    return &DoctorFreed{d, p, Date(float64(now) + (p.ProcessingTime*.25))}
+}
 func (e DoctorFreed) Type() string { return DoctorFreedEvent; }
 func (e DoctorFreed) Date() Date { return e.date; }
+func (e DoctorFreed) Execute(h *Hospital) {
+    //Check WaitingForDoctor and assign a Doctor
+}
+func (e DoctorFreed) String() string {
+    return LogEvent(e)
+}
 
 //var events [...]string = ["Patient_Arrives", "Nurse_Idle", "Nurse_Process", "Doctor_Process", "Patient_Processed"]
 
@@ -149,6 +182,14 @@ type TimeLine struct {
     Event *EventNode
     History *list.List
     Now Date
+}
+
+func (tl *TimeLine) String() string {
+    history := ""
+    for s := tl.History.Front(); s.Next() != nil; s = s.Next() {
+        history += s.Value.(fmt.Stringer).String() + "\n"
+    }
+    return fmt.Sprintf("{\"TimeLine History\"\n%s", history)
 }
 
 // Optimize These Numbers
@@ -317,14 +358,20 @@ func (n *EventNode) Listen() {
 
 func (tl *TimeLine) ExecuteNextEvent(h *Hospital) {
     e := tl.Event.Get()
+    tl.Now = e.Date()
     e.Execute(h)
 }
 
-func (tl *TimeLine) TickForward() {
+func (tl *TimeLine) TickForward() bool {
     tl.History.PushBack(tl.Event.Get())
     lastEvent := tl.Event
     defer lastEvent.free()
+    if tl.Event.next == nil {
+        tl.Event = nil
+        return false
+    }
     tl.Event = tl.Event.next
+    return true
 }
 
 func (tl *TimeLine) PeekNextEvent() Event {
@@ -359,27 +406,35 @@ func (w *WaitingRoom) TotalWaiting() int {
     return totalWaiting
 }
 
-func (w *WaitingRoom) AddPatient(p *Patient) {
-    w.q[p.Priority].PushBack(p)
-}
-
-func (w *WaitingRoom) NextWaitingPatient(date Date) (nextWaiting *Patient) {
-    for i := NUM_PRIORITIES; i >= 0; i-- {
-        if w.q[i].Len() > 0 {
-            ele := w.q[i].Front()
-            p := ele.Value.(*Patient)
-            if p.Status == "WaitingForNurse" {
-                if p.DateOccursDuring(date) {
-                    w.q[i].Remove(ele)
-                    if nextWaiting != nil {
-                        w.q[i].PushFront(nextWaiting)
-                    }
-                    nextWaiting = p
-                }
+func (w *WaitingRoom) AddPatient(p *Patient, h *Hospital) {
+    for i := 0; i < NUM_PRIORITIES; i++ {
+        if w.q[i].Len() == 0 && i == p.Priority {
+            // Check and Assign this Patient to a Nurse
+            if !h.AssignNurse(p) {
+                // No Nurse Available
+                p.SetNextState("WaitingForNurse")
+                w.q[p.Priority].PushBack(p)
             }
+        } else if i < p.Priority && w.q[i].Len() == 0 {
+            // Queue in a Lower Priority already has a Patient Waiting
+            continue
+        } else if i == p.Priority {
+            // Just Enque this poor Sucker
+            p.SetNextState("WaitingForNurse")
+            w.q[p.Priority].PushBack(p)
         }
     }
-    return
+}
+
+func (w *WaitingRoom) Next() *Patient {
+    for i := 0; i < NUM_PRIORITIES; i++ {
+        if w.q[i].Len() > 0 {
+            pEle := w.q[i].Front()
+            w.q[i].Remove(pEle)
+            return pEle.Value.(*Patient)
+        }
+    }
+    return nil
 }
 
 type Hospital struct {
@@ -387,13 +442,14 @@ type Hospital struct {
     Nurses []*Nurse
     Doctors []*Doctor
     WaitingRoom *WaitingRoom
+    WaitingForDoctor *list.List
     TimeLine *TimeLine
 }
 
 func NewHospital(spawnTime float64, nurses, doctors int) *Hospital {
     span := TimeSpan{0, 10*60, false, nil}
     totalPatients := int(math.Floor(float64(span.Ended)/spawnTime))
-    h := &Hospital{make([]*Patient, 0, totalPatients), make([]*Nurse, 0, nurses), make([]*Doctor, 0, doctors), NewWaitingRoom(), &TimeLine{Event: newEventNode(false), History: list.New()}}
+    h := &Hospital{make([]*Patient, 0, totalPatients), make([]*Nurse, 0, nurses), make([]*Doctor, 0, doctors), NewWaitingRoom(), list.New(), &TimeLine{Event: newEventNode(false), History: list.New()}}
 
     for i := 0; i < totalPatients; i++ {
         h.TimeLine.Event.Defer <- PatientArrives(float64(i)*spawnTime)
@@ -409,8 +465,28 @@ func (h *Hospital) ExecuteNextEvent() {
     h.TimeLine.ExecuteNextEvent(h)
 }
 
-func (h *Hospital) CheckAndAssignNurse() {
-    now := h.TimeLine.Now
+func (h *Hospital) TickForward() bool {
+    return h.TimeLine.TickForward()
+}
+
+func (h *Hospital) StartSimulation() {
+    go h.TimeLine.Event.Listen()
+}
+
+func (h *Hospital) FreeDoctor() *Doctor {
+    idleDocs := make([]*Doctor, 0, len(h.Doctors))
+    for _, doc := range h.Doctors {
+        if doc.Status == "Idle" {
+            idleDocs = append(idleDocs, doc)
+        }
+    }
+    if len(idleDocs) > 0 {
+        return idleDocs[rand.Intn(len(idleDocs))]
+    }
+    return nil
+}
+
+func (h *Hospital) FreeNurse() *Nurse {
     idleNurses := make([]*Nurse, 0, len(h.Nurses))
     for _, nurse := range h.Nurses {
         if nurse.Status == "Idle" {
@@ -418,16 +494,57 @@ func (h *Hospital) CheckAndAssignNurse() {
         }
     }
     if len(idleNurses) > 0 {
-        nurse := idleNurses[rand.Intn(len(idleNurses))]
-        // Nurse Takes the Patient and generates the Lazy List Event
-        //nurse.Sim.State
-        if p := h.WaitingRoom.NextWaitingPatient(now); p != nil {
-            nurse.SetNextState("Busy")
-            p.SetNextState("WithNurse")
-            futureEventDate := float64(now) + (p.ProcessingTime*.75)
-            h.TimeLine.PushFutureEvent(&NurseFreed{nurse, p, Date(futureEventDate)})
-        }
+        return idleNurses[rand.Intn(len(idleNurses))]
     }
+    return nil
+}
+
+func (h *Hospital) AssignDoctor(p *Patient) {
+    now := h.TimeLine.Now
+    if doc := h.FreeDoctor(); doc != nil {
+        doc.SetNextState("Busy")
+        p.SetNextState("WithDoctor")
+        futureEventDate := float64(now) + (p.ProcessingTime*.25)
+        h.TimeLine.PushFutureEvent(&DoctorFreed{doc, p, Date(futureEventDate)})
+    } else {
+        // Put the Patient in Waiting
+        p.SetNextState("WaitingForDoctor")
+        h.WaitingForDoctor.PushBack(p)
+    }
+}
+
+func (h *Hospital) NurseFreed(n *Nurse) {
+    // There is a Free Nurse, Pull the Next Patient Out of Q
+    if p := h.WaitingRoom.Next(); p != nil {
+        // Add any other Idle Nurses into the Lottery
+        // This isn't Round Robin
+        idleNurses := make([]*Nurse, 0, len(h.Nurses))
+        idleNurses = append(idleNurses, n)
+        for _, nurse := range h.Nurses {
+            if nurse.Status == "Idle" {
+                idleNurses = append(idleNurses, nurse)
+            }
+        }
+        nurse := idleNurses[rand.Intn(len(idleNurses))]
+        if nurse != n {
+            // If the Random Nurse from the Idle Pool wasn't
+            // The newly Freed one we must put it in Idle state
+            n.SetNextState("Idle")
+        }
+
+        h.TimeLine.PushFutureEvent(NewNurseFreed(nurse, p, h.TimeLine.Now))
+    } else {
+        // NO Patients waiting, this nurse is freed to play minecraft
+        n.SetNextState("Idle")
+    }
+}
+
+func (h *Hospital) AssignNurse(p *Patient) bool {
+    if n := h.FreeNurse(); n != nil {
+        h.TimeLine.PushFutureEvent(NewNurseFreed(n, p, h.TimeLine.Now))
+        return true
+    }
+    return false
 }
 
 func init() {
@@ -444,21 +561,4 @@ func main() {
     go e.Listen()
 
     fmt.Println("Generating Events....")
-
-    //go func() {
-    for i := 0; i < 20; i++ {
-        temp := PatientArrives(rand.Float64() * 10000)
-        fmt.Println(temp)
-        e.Defer <- temp
-    }
-
-    fmt.Println("Done")
-    //}()
-    val := e.get(e)
-    fmt.Println(val)
-    for  ;e.next != nil; e = e.next {
-        val := e.get(e)
-        fmt.Println(val)
-    }
-    //h := NewHospital(10, 1, 1)
 }
