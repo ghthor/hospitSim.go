@@ -84,16 +84,14 @@ type Staff struct {
 }
 
 type Nurse Staff
-type Doctor Staff
-
-func (n Nurse) Proccess(p Patient) Event {
-    //TODO
-    return nil;
+func NewNurse(h *Hospital) *Nurse {
+    n := &Nurse{ Sim{ State{"Idle", TimeSpan{Began: h.Now(), TimeLine: h.TimeLine}}, list.New()}, 0}
+    return n
 }
-
-func (d Doctor) Proccess(p Patient) Event {
-    //TODO
-    return nil;
+type Doctor Staff
+func NewDoctor(h *Hospital) *Doctor {
+    n := &Doctor{ Sim{ State{"Idle", TimeSpan{Began: h.Now(), TimeLine: h.TimeLine}}, list.New()}, 0}
+    return n
 }
 
 type Patient struct {
@@ -102,8 +100,15 @@ type Patient struct {
     ProcessingTime float64
     Priority int
 }
+func NewPatient(arrivalDate Date, hospital *Hospital) *Patient {
+    p := &Patient{ Sim{ State{"Arriving", TimeSpan{ Began: arrivalDate, TimeLine: hospital.TimeLine}}, list.New()}, hospital, rand.Float64() * 60 + 1, rand.Intn(NUM_PRIORITIES)}
+    return p
+}
 
-//
+func (p *Patient) String() string {
+    return fmt.Sprintf("{\"Patient\":{\"Priority\":%d,\"State\":\"%v", p.Priority, p.Status)
+}
+
 type PatientArrives Date
 const PatientArrivesEvent = "PatientArrives"
 func (e PatientArrives) Type() string { return PatientArrivesEvent; }
@@ -112,14 +117,12 @@ func (e PatientArrives) String() string {
 }
 func (e PatientArrives) Date() Date { return Date(e); }
 func (e PatientArrives) Execute(h *Hospital) {
-    // Patients State during WaitingRoom phase is Arriving....
-    // TODO: Change this ^
     p := NewPatient(Date(e), h)
+    //fmt.Println("New Patient", p)
     h.WaitingRoom.AddPatient(p, h)
     h.Patients = append(h.Patients, p)
 }
 
-//
 type NurseFreed struct {
     Nurse *Nurse
     Patient *Patient
@@ -167,17 +170,6 @@ func (e DoctorFreed) String() string {
     return LogEvent(e)
 }
 
-//var events [...]string = ["Patient_Arrives", "Nurse_Idle", "Nurse_Process", "Doctor_Process", "Patient_Processed"]
-
-func NewPatient(arrivalDate Date, hospital *Hospital) *Patient {
-    p := &Patient{ Sim{ State{"Arriving", TimeSpan{ Began: arrivalDate, TimeLine: hospital.TimeLine}}, list.New()}, hospital, rand.Float64() * 60 + 1, rand.Intn(NUM_PRIORITIES)}
-    return p
-}
-
-func (p Patient) String() string {
-    return fmt.Sprintf("Patient {\n\tProcessingTime:%f\n\tPriority:%d\n}", p.ProcessingTime, p.Priority)
-}
-
 type TimeLine struct {
     Event *EventNode
     History *list.List
@@ -187,9 +179,9 @@ type TimeLine struct {
 func (tl *TimeLine) String() string {
     history := ""
     for s := tl.History.Front(); s.Next() != nil; s = s.Next() {
-        history += s.Value.(fmt.Stringer).String() + "\n"
+        history += fmt.Sprintf("%v\n", s.Value)
     }
-    return fmt.Sprintf("{\"TimeLine History\"\n%s", history)
+    return fmt.Sprintf("\"TimeLine History\"\n%s", history)
 }
 
 // Optimize These Numbers
@@ -203,12 +195,27 @@ var FreeList chan *EventNode = make(chan *EventNode, FreeListMax)
 type EventNode struct {
     Id uint
     next *EventNode
-    Defer chan Event
-    DeferFull chan bool
+    deferredEvents chan Event
+    deferFull chan bool
     finalizeValue chan chan Event
+    isFinalized bool
     value Event
     get func(*EventNode) Event
     set func(*EventNode, Event)
+}
+
+func (n *EventNode) DeferEvent(e Event) {
+    if n.isFinalized {
+        if n.next == nil {
+            // This shouldn't ever happen?
+            // But just in case
+            n.makeNext(e)
+        } else {
+            n.next.deferredEvents <- e
+        }
+    } else {
+        n.deferredEvents <- e
+    }
 }
 
 func (n *EventNode) Get() Event {
@@ -218,11 +225,13 @@ func (n *EventNode) Get() Event {
 func (n *EventNode) makeNext(e Event) {
     select {
         case n.next = <-FreeList:
+            n.next.wipeClean()
             n.next.Id = n.Id + 1
             go n.next.Listen()
-            n.next.Defer <- e
+            n.next.deferredEvents <- e
         default:
             // Create a new One???
+            fmt.Printf("ERROR: 0 Free EventNodes")
     }
 }
 
@@ -238,7 +247,7 @@ func getAndFinalize(n *EventNode) Event {
 }
 
 func (e *EventNode) free() {
-    e.wipeClean()
+    //e.wipeClean()
     FreeList <- e
 }
 
@@ -255,8 +264,8 @@ func (e *EventNode) wipeClean() *EventNode {
 }
 
 func (e *EventNode) newChannels() {
-    e.Defer = make(chan Event, DeferMax)
-    e.DeferFull = make(chan bool, 1)
+    e.deferredEvents = make(chan Event, DeferMax)
+    e.deferFull = make(chan bool, 1)
     e.finalizeValue = make(chan chan Event)
 }
 
@@ -301,14 +310,14 @@ func setAndDefer(n *EventNode, e Event) {
         e = temp
     }
     select {
-    case n.next.Defer <- e:
+    case n.next.deferredEvents <- e:
     default:
         // Hey... Hey... Hey Listen, n.next get your shit together
         select {
-        case n.next.DeferFull <- true:
+        case n.next.deferFull <- true:
         default:
             // Need this to log wait times
-            go func() { n.next.Defer <- e; }()
+            go func() { n.next.deferredEvents <- e; }()
         }
     }
 }
@@ -317,14 +326,14 @@ func setAndDefer(n *EventNode, e Event) {
 func (n *EventNode) setAndCheckFull(e Event) {
     n.set(n, e)
     select {
-    case imFull := <-n.DeferFull:
+    case imFull := <-n.deferFull:
         if imFull {}
         select {
-        case e := <-n.Defer:
+        case e := <-n.deferredEvents:
             n.set(n, e)
         default:
             // Currently the previous node doesn't listen for this
-            //n.DeferFull <- false
+            //n.deferFull <- false
         }
     default:
     }
@@ -334,19 +343,20 @@ func (n *EventNode) Listen() {
     valueCh := make(chan Event)
     for {
         select {
-        case e := <-n.Defer:
+        case e := <-n.deferredEvents:
             n.set(n, e)
-        case imFull := <-n.DeferFull:
+        case imFull := <-n.deferFull:
             if imFull {}
-            // Drain n.Defer
+            // Drain n.deferredEvents
         case n.finalizeValue <- valueCh:
             // Value only ever gets check once
             for {
                 select {
-                case e := <-n.Defer:
+                case e := <-n.deferredEvents:
                     n.set(n, e)
                 default:
                     // This Go Routine's purpose has been completed
+                    n.isFinalized = true
                     valueCh <- n.value
                     //n.free()
                     return
@@ -356,20 +366,18 @@ func (n *EventNode) Listen() {
     }
 }
 
-func (tl *TimeLine) ExecuteNextEvent(h *Hospital) {
+func (tl *TimeLine) TickForward(h *Hospital) bool {
+    if tl.Event == nil {
+        return false
+    }
     e := tl.Event.Get()
     tl.Now = e.Date()
     e.Execute(h)
-}
+    fmt.Println(e)
+    tl.History.PushBack(e)
 
-func (tl *TimeLine) TickForward() bool {
-    tl.History.PushBack(tl.Event.Get())
     lastEvent := tl.Event
     defer lastEvent.free()
-    if tl.Event.next == nil {
-        tl.Event = nil
-        return false
-    }
     tl.Event = tl.Event.next
     return true
 }
@@ -382,7 +390,7 @@ func (tl *TimeLine) PeekNextEvent() Event {
 }
 
 func (tl *TimeLine) PushFutureEvent(futureEvent Event) {
-    tl.Event.Defer <- futureEvent
+    tl.Event.DeferEvent(futureEvent)
 }
 
 //const WAITING_ROOM_Q_MAX_LENGTH = 300
@@ -446,14 +454,30 @@ type Hospital struct {
     TimeLine *TimeLine
 }
 
+func (h *Hospital) Now() Date {
+    return h.TimeLine.Now
+}
+
 func NewHospital(spawnTime float64, nurses, doctors int) *Hospital {
     span := TimeSpan{0, 10*60, false, nil}
     totalPatients := int(math.Floor(float64(span.Ended)/spawnTime))
     h := &Hospital{make([]*Patient, 0, totalPatients), make([]*Nurse, 0, nurses), make([]*Doctor, 0, doctors), NewWaitingRoom(), list.New(), &TimeLine{Event: newEventNode(false), History: list.New()}}
 
+    // Create the Patient Spawn Times
     for i := 0; i < totalPatients; i++ {
-        h.TimeLine.Event.Defer <- PatientArrives(float64(i)*spawnTime)
+        h.TimeLine.Event.DeferEvent(PatientArrives(float64(i)*spawnTime))
     }
+
+    // Create the Nurses
+    for i := 0; i < nurses; i++ {
+        h.Nurses = append(h.Nurses, NewNurse(h))
+    }
+
+    // Create the Doctors
+    for i := 0; i < doctors; i++ {
+        h.Doctors = append(h.Doctors, NewDoctor(h))
+    }
+
     return h
 }
 
@@ -461,16 +485,18 @@ func (h *Hospital) String() string {
     return fmt.Sprintf("\"Hospital\" : {\n\t\"Patients\":%d,\n\t\"Nurses\":%d,\n\t\"Doctors\":%d\n\t \"Events\":%v\n}", len(h.Patients), len(h.Nurses), len(h.Doctors), h.TimeLine.Event)
 }
 
-func (h *Hospital) ExecuteNextEvent() {
-    h.TimeLine.ExecuteNextEvent(h)
-}
-
 func (h *Hospital) TickForward() bool {
-    return h.TimeLine.TickForward()
+    return h.TimeLine.TickForward(h)
 }
 
-func (h *Hospital) StartSimulation() {
+func (h *Hospital) StartSimulation() chan *Hospital {
     go h.TimeLine.Event.Listen()
+    simCompleted := make(chan *Hospital)
+    go func() {
+        for h.TickForward() {}
+        simCompleted <- h
+    }()
+    return simCompleted
 }
 
 func (h *Hospital) FreeDoctor() *Doctor {
@@ -538,6 +564,11 @@ func (h *Hospital) NurseFreed(n *Nurse) {
     }
 }
 
+func (h *Hospital) Report() (r map[string]string) {
+    //TODO: Report Some Useful Data
+    return nil
+}
+
 func (h *Hospital) AssignNurse(p *Patient) bool {
     if n := h.FreeNurse(); n != nil {
         h.TimeLine.PushFutureEvent(NewNurseFreed(n, p, h.TimeLine.Now))
@@ -556,8 +587,11 @@ func init() {
 }
 
 func main() {
-    e := newEventNode(false)
-    go e.Listen()
+    h := NewHospital(10, 1, 1)
 
-    fmt.Println("Generating Events....")
+    fmt.Println("Running the Sim....")
+    simComplete := h.StartSimulation()
+    h = <-simComplete
+    fmt.Println("Simulation Completed....")
+    //fmt.Println(h.TimeLine)
 }
