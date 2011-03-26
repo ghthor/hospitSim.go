@@ -146,7 +146,8 @@ func (p Patient) String() string {
 }
 
 type TimeLine struct {
-    Events *list.List
+    Event *EventNode
+    History *list.List
     Now Date
 }
 
@@ -167,6 +168,10 @@ type EventNode struct {
     value Event
     get func(*EventNode) Event
     set func(*EventNode, Event)
+}
+
+func (n *EventNode) Get() Event {
+    return n.get(n)
 }
 
 func (n *EventNode) makeNext(e Event) {
@@ -310,20 +315,27 @@ func (n *EventNode) Listen() {
     }
 }
 
-func (tl *TimeLine) ExecuteNextEvent() {
-    //tl.Events.Remove(tl.Events.Front())
-    //e := tl.Events.Front().Value.(Event)
-    //tl.Now = e.Date()
-    //TODO
+func (tl *TimeLine) ExecuteNextEvent(h *Hospital) {
+    e := tl.Event.Get()
+    e.Execute(h)
+}
+
+func (tl *TimeLine) TickForward() {
+    tl.History.PushBack(tl.Event.Get())
+    lastEvent := tl.Event
+    defer lastEvent.free()
+    tl.Event = tl.Event.next
 }
 
 func (tl *TimeLine) PeekNextEvent() Event {
-    //TODO
+    if tl.Event.next != nil {
+        return tl.Event.next.Get()
+    }
     return nil
 }
 
 func (tl *TimeLine) PushFutureEvent(futureEvent Event) {
-    //TODO
+    tl.Event.Defer <- futureEvent
 }
 
 //const WAITING_ROOM_Q_MAX_LENGTH = 300
@@ -381,20 +393,20 @@ type Hospital struct {
 func NewHospital(spawnTime float64, nurses, doctors int) *Hospital {
     span := TimeSpan{0, 10*60, false, nil}
     totalPatients := int(math.Floor(float64(span.Ended)/spawnTime))
-    h := &Hospital{make([]*Patient, 0, totalPatients), make([]*Nurse, 0, nurses), make([]*Doctor, 0, doctors), NewWaitingRoom(), &TimeLine{Events: list.New()}}
+    h := &Hospital{make([]*Patient, 0, totalPatients), make([]*Nurse, 0, nurses), make([]*Doctor, 0, doctors), NewWaitingRoom(), &TimeLine{Event: newEventNode(false), History: list.New()}}
 
     for i := 0; i < totalPatients; i++ {
-        h.TimeLine.Events.PushBack(PatientArrives(float64(i)*spawnTime))
+        h.TimeLine.Event.Defer <- PatientArrives(float64(i)*spawnTime)
     }
     return h
 }
 
 func (h *Hospital) String() string {
-    return fmt.Sprintf("\"Hospital\" : {\n\t\"Patients\":%d,\n\t\"Nurses\":%d,\n\t\"Doctors\":%d\n\t \"Events\":%v\n}", len(h.Patients), len(h.Nurses), len(h.Doctors), h.TimeLine.Events)
+    return fmt.Sprintf("\"Hospital\" : {\n\t\"Patients\":%d,\n\t\"Nurses\":%d,\n\t\"Doctors\":%d\n\t \"Events\":%v\n}", len(h.Patients), len(h.Nurses), len(h.Doctors), h.TimeLine.Event)
 }
 
 func (h *Hospital) ExecuteNextEvent() {
-    h.TimeLine.ExecuteNextEvent()
+    h.TimeLine.ExecuteNextEvent(h)
 }
 
 func (h *Hospital) CheckAndAssignNurse() {
