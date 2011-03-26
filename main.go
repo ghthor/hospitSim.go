@@ -103,6 +103,9 @@ type Patient struct {
 type PatientArrives Date
 const PatientArrivesEvent = "PatientArrives"
 func (e PatientArrives) Type() string { return PatientArrivesEvent; }
+func (e PatientArrives) String() string {
+    return fmt.Sprintf("Event: %v \t\t\t%s",float64(e),e.Type())
+}
 func (e PatientArrives) Date() Date { return Date(e); }
 func (e PatientArrives) Execute(h *Hospital) {
     p := NewPatient(Date(e), h)
@@ -147,10 +150,170 @@ type TimeLine struct {
     Now Date
 }
 
+// Optimize These Numbers
+const (
+    FreeListMax = 100
+    DeferMax = 100
+)
+
+var FreeList chan *EventNode = make(chan *EventNode, FreeListMax)
+
+type EventNode struct {
+    Id uint
+    next *EventNode
+    Defer chan Event
+    DeferFull chan bool
+    finalizeValue chan chan Event
+    value Event
+    get func(*EventNode) Event
+    set func(*EventNode, Event)
+}
+
+func (n *EventNode) makeNext(e Event) {
+    select {
+        case n.next = <-FreeList:
+            n.next.Id = n.Id + 1
+            go n.next.Listen()
+            n.next.Defer <- e
+        default:
+            // Create a new One???
+    }
+}
+
+// Condtional getters
+func getFinalValue(n *EventNode) Event {
+    return n.value
+}
+
+func getAndFinalize(n *EventNode) Event {
+    // I want to defer this
+    n.get = getFinalValue
+    return <-(<-n.finalizeValue)
+}
+
+func (e *EventNode) free() {
+    e.wipeClean()
+    FreeList <- e
+}
+
+func (e *EventNode) wipeClean() *EventNode {
+    e.Id = 0
+    // TODO: See if this is nessacary
+    e.newChannels()
+    e.value = nil
+    e.next = nil
+
+    e.set = setNormal
+    e.get = getAndFinalize
+    return e
+}
+
+func (e *EventNode) newChannels() {
+    e.Defer = make(chan Event, DeferMax)
+    e.DeferFull = make(chan bool, 1)
+    e.finalizeValue = make(chan chan Event)
+}
+
+func newEventNode(force bool) (e *EventNode) {
+    select {
+    case e = <-FreeList:
+        return e
+    default:
+        if force {
+            return ( &EventNode{} ).wipeClean()
+        } else {
+            return <-FreeList
+        }
+    }
+    return nil
+}
+
+func NewEventNodeList(events []Event) *EventNode {
+    // Log how many times this is called
+    if events == nil {
+        return newEventNode(false)
+    }
+    // Create a Group of nodes
+    return nil
+}
+
+// Conditional Setters
+func setNormal(n *EventNode, e Event) {
+    n.set = setAndCreateNextNode
+    n.value = e
+}
+
+func setAndCreateNextNode(n *EventNode, e Event) {
+    n.set = setAndDefer
+    n.makeNext(e)
+}
+
+func setAndDefer(n *EventNode, e Event) {
+    if !(e.Date() > n.value.Date()) {
+        temp := n.value
+        n.value = e
+        e = temp
+    }
+    select {
+    case n.next.Defer <- e:
+    default:
+        // Hey... Hey... Hey Listen, n.next get your shit together
+        select {
+        case n.next.DeferFull <- true:
+        default:
+            // Need this to log wait times
+            go func() { n.next.Defer <- e; }()
+        }
+    }
+}
+
+// I don't new if this is needed at all
+func (n *EventNode) setAndCheckFull(e Event) {
+    n.set(n, e)
+    select {
+    case imFull := <-n.DeferFull:
+        if imFull {}
+        select {
+        case e := <-n.Defer:
+            n.set(n, e)
+        default:
+            // Currently the previous node doesn't listen for this
+            //n.DeferFull <- false
+        }
+    default:
+    }
+}
+
+func (n *EventNode) Listen() {
+    valueCh := make(chan Event)
+    for {
+        select {
+        case e := <-n.Defer:
+            n.set(n, e)
+        case imFull := <-n.DeferFull:
+            if imFull {}
+            // Drain n.Defer
+        case n.finalizeValue <- valueCh:
+            // Value only ever gets check once
+            for {
+                select {
+                case e := <-n.Defer:
+                    n.set(n, e)
+                default:
+                    // This Go Routine's purpose has been completed
+                    valueCh <- n.value
+                    //n.free()
+                    return
+                }
+            }
+        }
+    }
+}
+
 func (tl *TimeLine) ExecuteNextEvent() {
-    tl.Events.Remove(tl.Events.Front())
-    e := tl.Events.Front().Value.(Event)
-    tl.Now = e.Date()
+    //tl.Events.Remove(tl.Events.Front())
+    //e := tl.Events.Front().Value.(Event)
+    //tl.Now = e.Date()
     //TODO
 }
 
@@ -256,9 +419,34 @@ func (h *Hospital) CheckAndAssignNurse() {
 }
 
 func init() {
+    // Allocate EventNodes
+    go func() {
+        for i := 0; i < FreeListMax; i++ {
+            FreeList <- new(EventNode).wipeClean()
+        }
+    }()
 }
 
 func main() {
-    h := NewHospital(10, 1, 1)
-    fmt.Println(h)
+    e := newEventNode(false)
+    go e.Listen()
+
+    fmt.Println("Generating Events....")
+
+    //go func() {
+    for i := 0; i < 20; i++ {
+        temp := PatientArrives(rand.Float64() * 10000)
+        fmt.Println(temp)
+        e.Defer <- temp
+    }
+
+    fmt.Println("Done")
+    //}()
+    val := e.get(e)
+    fmt.Println(val)
+    for  ;e.next != nil; e = e.next {
+        val := e.get(e)
+        fmt.Println(val)
+    }
+    //h := NewHospital(10, 1, 1)
 }
