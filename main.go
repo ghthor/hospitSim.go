@@ -6,6 +6,7 @@ import (
     "container/list"
     "math"
     "http"
+    "io"
 	//"flag"
     //"os"
     //"io/ioutil"
@@ -46,6 +47,10 @@ func (t *TimeSpan) DateOccursDuring(date Date) bool {
     return (t.Began <= date && date <= t.Ended)
 }
 
+func (t *TimeSpan) String() string {
+    return fmt.Sprintf("{\"TimeSpan\": {\"Began\" : %f, \"Ended\" %f } }", t.Began, t.Ended)
+}
+
 type Event interface {
     Type() string
     Date() Date
@@ -62,10 +67,16 @@ type State struct {
     *TimeSpan
 }
 
-func (s *State) Finalize() *State {
+func (s *State) String() string {
+    return fmt.Sprintf("{\"State\" : { \"Status\" : \"%s\", \"TimeSpan\": %v } }", s.Status, s.TimeSpan)
+}
+
+func (s *State) Finalize() {
     s.IsLive = false
     s.Ended = s.TimeLine.Now
-    return s
+    if s.ElapsedTime() < 0 {
+        fmt.Println("ERROR: Elasped Time of 0")
+    }
 }
 
 type Sim struct {
@@ -74,7 +85,7 @@ type Sim struct {
 }
 
 func (s *Sim) SetNextState(status string) {
-    s.State = s.State.Finalize()
+    s.State.Finalize()
     //Add the old state to the History
     s.History.PushFront(s.State)
     s.State = &State{status, &TimeSpan{Began: s.State.Ended, Ended: s.State.Ended, TimeLine: s.TimeLine}}
@@ -130,7 +141,6 @@ func (e PatientArrives) String() string {
 func (e PatientArrives) Date() Date { return Date(e); }
 func (e PatientArrives) Execute(h *Hospital) {
     p := NewPatient(Date(e), h)
-    //fmt.Println("New Patient", p)
     h.WaitingRoom.AddPatient(p, h)
     h.Patients = append(h.Patients, p)
 }
@@ -152,7 +162,6 @@ func (e NurseFreed) Type() string { return NurseFreedEvent; }
 func (e NurseFreed) Date() Date { return e.date; }
 func (e NurseFreed) Execute(h *Hospital) {
     //Check WaitingRoom and assign a Nurse
-    //e.Nurse.SetNextState("Idle")
     h.AssignDoctorToPatient(e.Patient)
     h.NurseFreed(e.Nurse)
 }
@@ -220,8 +229,7 @@ type EventNode struct {
 func (n *EventNode) DeferEvent(e Event) {
     if n.isFinalized {
         if n.next == nil {
-            // This shouldn't ever happen?
-            // But just in case
+            //TODO: These need to be Logged
             n.makeNext(e)
         } else {
             n.next.deferredEvents <- e
@@ -313,6 +321,11 @@ func setNormal(n *EventNode, e Event) {
 
 func setAndCreateNextNode(n *EventNode, e Event) {
     n.set = setAndDefer
+    if !(e.Date() > n.value.Date()) {
+        temp := n.value
+        n.value = e
+        e = temp
+    }
     n.makeNext(e)
 }
 
@@ -371,7 +384,7 @@ func (n *EventNode) Listen() {
                     // This Go Routine's purpose has been completed
                     n.isFinalized = true
                     valueCh <- n.value
-                    //n.free()
+                    //fmt.Println("Node Finished", n.value)
                     return
                 }
             }
@@ -385,7 +398,9 @@ func (tl *TimeLine) TickForward(h *Hospital) bool {
     }
     e := tl.Event.Get()
     tl.Now = e.Date()
+    //fmt.Println("Executing:\n", e, "\nNow:", tl.Now)
     e.Execute(h)
+    //fmt.Println("Executed")
     fmt.Println(e)
     tl.History.PushBack(e)
 
@@ -436,13 +451,12 @@ func (w *WaitingRoom) AddPatient(p *Patient, h *Hospital) {
                 p.SetNextState("WaitingForNurse")
                 w.q[p.Priority].PushBack(p)
             }
-        } else if i < p.Priority && w.q[i].Len() == 0 {
-            // Queue in a Lower Priority already has a Patient Waiting
-            continue
-        } else if i == p.Priority {
+        } else if w.q[i].Len() > 0 && i < p.Priority {
+            // Queue in a Higher Priority already has a Patient Waiting
             // Just Enque this poor Sucker
             p.SetNextState("WaitingForNurse")
             w.q[p.Priority].PushBack(p)
+            continue
         }
     }
 }
@@ -626,7 +640,21 @@ func init() {
     }()
 }
 
+func HomeHandler(w http.ResponseWriter, r *http.Request) {
+    if homepage == "" {
+       homepage = compilePage(temp)
+    }
+    io.WriteString(w, homepage)
+}
+
+var homepage string
+var temp []*Patient
+
 func main() {
+    err := loadTemplates()
+    if err != nil { fmt.Println(err); return; }
+
+    // Simulation
     h := NewHospital(60, 1, 1)
 
     fmt.Println("Running the Sim....")
@@ -634,12 +662,7 @@ func main() {
     h = <-simComplete
     fmt.Println("Simulation Completed....")
 
-    cdata := make([](map[string]float64), len(h.Patients))
-    for i := 0; i < len(h.Patients); i++ {
-        cdata[i] = h.Patients[i].TotalUp()
-    }
-
-    fmt.Println(cdata)
+    temp = h.Patients
 
     wd, err := os.Getwd();
     if err != nil { fmt.Println("Errored when getting Working Directory", err); return }
@@ -648,10 +671,10 @@ func main() {
     //if err != nil { fmt.Println("ERROR:", err); return; }
 
     http.Handle("/assets/", http.FileServer(wd, ""))
-    http.Handle("/", http.FileServer(wd, ""))
-    //http.HandleFunc("/", http.HandlerFunc(HandleIndex))
+    //http.Handle("/", http.FileServer(wd, ""))
+    http.HandleFunc("/", http.HandlerFunc(HomeHandler))
 
-    //err = http.ListenAndServe(":6060", nil);
+    err = http.ListenAndServe(":6060", nil);
 
     if err != nil { fmt.Println("ERROR:", err); }
 
