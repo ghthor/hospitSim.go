@@ -242,7 +242,7 @@ func (tl *TimeLine) String() string {
 // Optimize These Numbers
 const (
     FreeListMax = 100
-    DeferMax = 100
+    DeferMax = 1000
 )
 
 var FreeList chan *EventNode = make(chan *EventNode, FreeListMax)
@@ -250,8 +250,8 @@ var FreeList chan *EventNode = make(chan *EventNode, FreeListMax)
 type EventNode struct {
     Id uint
     next *EventNode
+    Next chan *EventNode
     deferredEvents chan Event
-    deferFull chan bool
     finalizeValue chan chan Event
     isFinalized bool
     value Event
@@ -260,17 +260,20 @@ type EventNode struct {
 }
 
 func (n *EventNode) DeferEvent(e Event) {
+    if n == nil {
+        fmt.Println("ERROR: An event is being created after the event chain has completed")
+        panic("Attemped Defer when EventNode == nil")
+    }
     if n.isFinalized {
         if n.next == nil {
-            //TODO: These need to be Logged
-            fmt.Println("WARNING: Creating the Next Node once Current Node isFinalized")
-            n.makeNext(e)
+            fmt.Println("WARNING: n.next == nil")
         } else {
-            n.next.deferredEvents <- e
+            fmt.Println("LOG: an Event generated this", e)
         }
     } else {
-        n.deferredEvents <- e
+        fmt.Println("LOG: Initial Event created", e)
     }
+    n.deferredEvents <- e
 }
 
 func (n *EventNode) Get() Event {
@@ -278,16 +281,10 @@ func (n *EventNode) Get() Event {
 }
 
 func (n *EventNode) makeNext(e Event) {
-    select {
-        case n.next = <-FreeList:
-            n.next.wipeClean()
-            n.next.Id = n.Id + 1
-            go n.next.Listen()
-            n.next.deferredEvents <- e
-        default:
-            // Create a new One???
-            fmt.Printf("ERROR: 0 Free EventNodes")
-    }
+    n.next = newEventNode(true)
+    n.next.Id = n.Id + 1
+    go n.next.Listen()
+    n.next.deferredEvents <- e
 }
 
 // Condtional getters
@@ -301,9 +298,14 @@ func getAndFinalize(n *EventNode) Event {
     return <-(<-n.finalizeValue)
 }
 
-func (e *EventNode) free() {
-    //e.wipeClean()
-    FreeList <- e
+type TurnCompleted int
+func (t TurnCompleted) Date() Date { return math.MaxFloat64; }
+func (t TurnCompleted) Type() string { return "TurnCompleted"; }
+func (t TurnCompleted) Execute(h *Hospital) { return; }
+
+func (n *EventNode) free() {
+    n.deferredEvents <- TurnCompleted(n.Id)
+    FreeList <- n
 }
 
 func (e *EventNode) wipeClean() *EventNode {
@@ -321,19 +323,23 @@ func (e *EventNode) wipeClean() *EventNode {
 
 func (e *EventNode) newChannels() {
     e.deferredEvents = make(chan Event, DeferMax)
-    e.deferFull = make(chan bool, 1)
     e.finalizeValue = make(chan chan Event)
+    e.Next = make(chan *EventNode)
 }
 
 func newEventNode(force bool) (e *EventNode) {
+    fmt.Println("LOG: New Node Requested", force)
     select {
     case e = <-FreeList:
+        e.wipeClean()
         return e
     default:
         if force {
             return ( &EventNode{} ).wipeClean()
         } else {
-            return <-FreeList
+            e := <-FreeList
+            e.wipeClean()
+            return e
         }
     }
     return nil
@@ -361,6 +367,7 @@ func setAndCreateNextNode(n *EventNode, e Event) {
         n.value = e
         e = temp
     }
+    fmt.Println("LOG: Next node is being created during a set operation")
     n.makeNext(e)
 }
 
@@ -370,45 +377,16 @@ func setAndDefer(n *EventNode, e Event) {
         n.value = e
         e = temp
     }
-    select {
-    case n.next.deferredEvents <- e:
-    default:
-        // Hey... Hey... Hey Listen, n.next get your shit together
-        select {
-        case n.next.deferFull <- true:
-        default:
-            // Need this to log wait times
-            go func() { n.next.deferredEvents <- e; }()
-        }
-    }
+    n.next.deferredEvents <- e;
 }
 
 // I don't new if this is needed at all
-func (n *EventNode) setAndCheckFull(e Event) {
-    n.set(n, e)
-    select {
-    case imFull := <-n.deferFull:
-        if imFull {}
-        select {
-        case e := <-n.deferredEvents:
-            n.set(n, e)
-        default:
-            // Currently the previous node doesn't listen for this
-            //n.deferFull <- false
-        }
-    default:
-    }
-}
-
 func (n *EventNode) Listen() {
     valueCh := make(chan Event)
     for {
         select {
         case e := <-n.deferredEvents:
             n.set(n, e)
-        case imFull := <-n.deferFull:
-            if imFull {}
-            // Drain n.deferredEvents
         case n.finalizeValue <- valueCh:
             // Value only ever gets check once
             for {
@@ -417,10 +395,31 @@ func (n *EventNode) Listen() {
                     n.set(n, e)
                 default:
                     // This Go Routine's purpose has been completed
+                    //Theoretically Process all events that were created before
+                    // n.value.Date()
                     n.isFinalized = true
                     valueCh <- n.value
-                    //fmt.Println("Node Finished", n.value)
-                    return
+
+                    // Now we must handle events that n.value could create
+                    for e := range n.deferredEvents {
+                        if e.Type() == "TurnCompleted" {
+                            // This is the signal that no new events can be generated on n.value.Date() which is Now
+                            fmt.Printf("LOG: Node %d Shutting Down and being Freed\n", n.Id)
+                            if (n.next == nil) {
+                                // This should mean the simulation has completed
+                                fmt.Println("LOG: Simulation Completed?")
+                            }
+                            break
+                        } else {
+                            // n.value's Event has generated a new event
+                            // Because we KNOW that n.value HAS to generate an event that occurs after n.value.Date()
+                            // We can pass this event off to n.next
+                            // We can also assume that n.set(n, e) will always pass e onto n.next
+                            n.set(n, e)
+                        }
+                    }
+                    // Now that the turn is completed we can pass off the value of n.next
+                    n.Next <- n.next
                 }
             }
         }
@@ -429,26 +428,20 @@ func (n *EventNode) Listen() {
 
 func (tl *TimeLine) TickForward(h *Hospital) bool {
     if tl.Event == nil {
+        fmt.Println("LOG: Simulation Completed")
         return false
     }
     e := tl.Event.Get()
+
     tl.Now = e.Date()
     //fmt.Println("Executing:\n", e, "\nNow:", tl.Now)
     e.Execute(h)
     //fmt.Println("Executed")
     tl.History.PushBack(e)
 
-    lastEvent := tl.Event
-    defer lastEvent.free()
-    tl.Event = tl.Event.next
+    tl.Event.free()
+    tl.Event = <-tl.Event.Next
     return true
-}
-
-func (tl *TimeLine) PeekNextEvent() Event {
-    if tl.Event.next != nil {
-        return tl.Event.next.Get()
-    }
-    return nil
 }
 
 func (tl *TimeLine) PushFutureEvent(futureEvent Event) {
@@ -485,12 +478,13 @@ func (w *WaitingRoom) AddPatient(p *Patient, h *Hospital) {
                 p.SetNextState("WaitingForNurse")
                 w.q[p.Priority].PushBack(p)
             }
-        } else if w.q[i].Len() > 0 && i < p.Priority {
+            return
+        } else if w.q[i].Len() > 0 && i <= p.Priority {
             // Queue in a Higher Priority already has a Patient Waiting
             // Just Enque this poor Sucker
             p.SetNextState("WaitingForNurse")
             w.q[p.Priority].PushBack(p)
-            continue
+            return
         }
     }
 }
@@ -524,8 +518,6 @@ func NewHospital(spawnTime float64, nurses, doctors int) *Hospital {
     totalPatients := int(math.Floor(float64(span.Ended)/spawnTime))
     h := &Hospital{make([]*Patient, 0, totalPatients), make([]*Nurse, 0, nurses), make([]*Doctor, 0, doctors), NewWaitingRoom(), list.New(), &TimeLine{Event: newEventNode(false), History: list.New()}}
 
-    go h.TimeLine.Event.Listen()
-
     // Create the Patient Spawn Times
     for i := 0; i < totalPatients; i++ {
         h.TimeLine.Event.DeferEvent(PatientArrives(float64(i)*spawnTime))
@@ -554,6 +546,7 @@ func (h *Hospital) TickForward() bool {
 
 func (h *Hospital) StartSimulation() chan *Hospital {
     simCompleted := make(chan *Hospital)
+    go h.TimeLine.Event.Listen()
     go func() {
         for h.TickForward() {}
         simCompleted <- h
@@ -703,7 +696,7 @@ func main() {
     temp = h.Patients
 
     wd, err := os.Getwd();
-    if err != nil { fmt.Println("Errored when getting Working Directory", err); return }
+    if err != nil { fmt.Println("ERROR: Failed to get Working Directory", err); return }
 
     //indexHtml, err := ioutil.ReadFile(wd + "/assets/index.html")
     //if err != nil { fmt.Println("ERROR:", err); return; }
