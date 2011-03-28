@@ -253,7 +253,7 @@ type EventNode struct {
     Next chan *EventNode
     deferredEvents chan Event
     finalizeValue chan chan Event
-    isFinalized bool
+    isFree chan bool
     value Event
     get func(*EventNode) Event
     set func(*EventNode, Event)
@@ -262,16 +262,7 @@ type EventNode struct {
 func (n *EventNode) DeferEvent(e Event) {
     if n == nil {
         log.Println("ERROR: An event is being created after the event chain has completed")
-        panic("Attemped Defer when EventNode == nil")
-    }
-    if n.isFinalized {
-        if n.next == nil {
-            log.Println("WARNING: n.next == nil")
-        } else {
-            log.Printf("LOG: Event:\n%v Generated:\n%v\n", n.value, e)
-        }
-    } else {
-        log.Println("LOG: Initial Event created", e)
+        panic("ERROR: Attemped Defer when EventNode == nil")
     }
     n.deferredEvents <- e
 }
@@ -281,8 +272,13 @@ func (n *EventNode) Get() Event {
 }
 
 func (n *EventNode) makeNext(e Event) {
+    if n.next != nil {
+        panic("ERROR: n.next isn't nil during makeNext")
+    }
     n.next = newEventNode(true)
-    go n.next.Listen()
+    if n.next == nil {
+        panic("ERROR: n.next is still nil after calling newEventNode")
+    }
     n.next.deferredEvents <- e
 }
 
@@ -308,9 +304,6 @@ func (n *EventNode) free() {
 }
 
 func (e *EventNode) wipeClean() *EventNode {
-    //e.Id = 0
-    e.isFinalized = false
-    // TODO: See if this is nessacary
     e.newChannels()
     e.value = nil
     e.next = nil
@@ -336,6 +329,8 @@ func newEventNode(force bool) (e *EventNode) {
         if force {
             log.Println("LOG: EventNode forced Creation")
             e = &EventNode{}
+            e.isFree = make(chan bool, 1)
+            e.isFree <- true
         } else {
             log.Println("LOG: Waiting for a free EventNode")
             e = <-FreeList
@@ -347,7 +342,13 @@ func newEventNode(force bool) (e *EventNode) {
         log.Println("LOG: TotalEvent Nodes Existing =", totalEventNodes)
         e.Id = totalEventNodes
     }
+    isFree := <-e.isFree
+    if !isFree {
+        // Something is wrong, Clean this node up, or ditch is entirely
+        panic("ERROR: Node didn't complete it's Cycle")
+    }
     e.wipeClean()
+    go e.Listen()
     return
 }
 
@@ -394,7 +395,6 @@ func (n *EventNode) Listen() {
                     // This Go Routine's purpose has been completed
                     //Theoretically Process all events that were created before
                     // n.value.Date()
-                    n.isFinalized = true
                     valueCh <- n.value
 
                     // Now we must handle events that n.value could create
@@ -417,6 +417,7 @@ func (n *EventNode) Listen() {
                     }
                     // Now that the turn is completed we can pass off the value of n.next
                     n.Next <- n.next
+                    n.isFree <- true
                     return
                 }
             }
@@ -547,7 +548,6 @@ func (h *Hospital) TickForward() bool {
 
 func (h *Hospital) StartSimulation() chan *Hospital {
     simCompleted := make(chan *Hospital)
-    go h.TimeLine.Event.Listen()
     go func() {
         for h.TickForward() {}
         simCompleted <- h
@@ -664,7 +664,9 @@ func init() {
     // Allocate EventNodes
     go func() {
         for i := 0; i < FreeListMax/2; i++ {
-            FreeList <- new(EventNode).wipeClean()
+            n := &EventNode{isFree: make(chan bool, 1)}
+            n.isFree <- true
+            FreeList <- n
         }
     }()
 }
