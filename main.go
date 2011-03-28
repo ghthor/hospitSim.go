@@ -8,6 +8,8 @@ import (
     "math"
     "http"
     "io"
+    "strings"
+    "strconv"
 	//"flag"
     //"os"
     //"io/ioutil"
@@ -93,7 +95,7 @@ func (s *Sim) SetNextState(status string) {
 }
 
 func (s *Sim) TotalUp() (map[string]float64) {
-    log.Println("LOG: Totaling the State's Elapsed Time for\n-History:", s)
+    //log.Println("LOG: Totaling the State's Elapsed Time for\n-History:", s)
     totals := make(map[string]float64)
     for e := s.History.Front(); e != nil; e = e.Next() {
         state := e.Value.(*State)
@@ -104,7 +106,7 @@ func (s *Sim) TotalUp() (map[string]float64) {
             totals[state.Status] = state.ElapsedTime()
         }
     }
-    log.Println("LOG: Totaling Completed for")
+    //log.Println("LOG: Totaling Completed for")
     return totals
 }
 
@@ -135,12 +137,11 @@ type Patient struct {
 func (s *Patient) TotalUp() (map[string]float64) {
     if s.Status != "Finished" {
         log.Println("ERROR: Patient never Processed", s.String())
+        panic("ERROR: A Patient was never Processed")
     }
-    log.Println("LOG: Totaling the State's Elapsed Time for\n-History:", s)
     totals := make(map[string]float64)
     for e := s.History.Front(); e != nil; e = e.Next() {
         state := e.Value.(*State)
-        fmt.Println("History:", state)
         n, ok := totals[state.Status]
         if ok {
             totals[state.Status] = n + state.ElapsedTime()
@@ -148,7 +149,6 @@ func (s *Patient) TotalUp() (map[string]float64) {
             totals[state.Status] = state.ElapsedTime()
         }
     }
-    log.Println("LOG: Totaling Completed for")
     return totals
 }
 
@@ -173,7 +173,7 @@ func (e PatientArrives) Execute(h *Hospital) {
     p.Id = len(h.Patients)
     h.Patients = append(h.Patients, p)
     h.WaitingRoom.AddPatient(p, h)
-    fmt.Println(LogEvent(e, p.String()))
+    //fmt.Println(LogEvent(e, p.String())) //LOG
 }
 
 type NurseFreed struct {
@@ -195,7 +195,7 @@ func (e NurseFreed) Execute(h *Hospital) {
     //Check WaitingRoom and assign a Nurse
     h.AssignDoctorToPatient(e.Patient)
     h.NurseFreed(e.Nurse)
-    fmt.Println(LogEvent(e, e.Patient.String()))
+    //fmt.Println(LogEvent(e, e.Patient.String())) //LOG
 }
 func (e NurseFreed) String() string {
     return LogEvent(e, e.Patient.String())
@@ -219,7 +219,7 @@ func (e DoctorFreed) Date() Date { return e.date; }
 func (e DoctorFreed) Execute(h *Hospital) {
     e.Patient.SetNextState("Finished")
     h.DoctorFreed(e.Doctor)
-    fmt.Println(LogEvent(e, e.Patient.String()))
+    //fmt.Println(LogEvent(e, e.Patient.String())) //LOG
 }
 func (e DoctorFreed) String() string {
     return LogEvent(e, e.Patient.String())
@@ -322,24 +322,24 @@ func (e *EventNode) newChannels() {
 var totalEventNodes int64
 
 func newEventNode(force bool) (e *EventNode) {
-    log.Println("LOG: New Node Requested")
+    //log.Println("LOG: New Node Requested")
     select {
     case e = <-FreeList:
     default:
         if force {
-            log.Println("LOG: EventNode forced Creation")
+            //log.Println("LOG: EventNode forced Creation")
             e = &EventNode{}
             e.isFree = make(chan bool, 1)
             e.isFree <- true
         } else {
-            log.Println("LOG: Waiting for a free EventNode")
+            //log.Println("LOG: Waiting for a free EventNode")
             e = <-FreeList
         }
     }
     if e.Id == 0 {
         // This is a new Unseen EventNode, Tag it
         totalEventNodes++
-        log.Println("LOG: TotalEvent Nodes Existing =", totalEventNodes)
+        //log.Println("LOG: TotalEvent Nodes Existing =", totalEventNodes)
         e.Id = totalEventNodes
     }
     isFree := <-e.isFree
@@ -365,7 +365,7 @@ func setAndCreateNextNode(n *EventNode, e Event) {
         n.value = e
         e = temp
     }
-    log.Println("LOG: Next node is being created during a set operation")
+    //log.Println("LOG: Next node is being created during a set operation")
     n.makeNext(e)
 }
 
@@ -401,10 +401,10 @@ func (n *EventNode) Listen() {
                     for e := range n.deferredEvents {
                         if e.Type() == "TurnCompleted" {
                             // This is the signal that no new events can be generated on n.value.Date() which is Now
-                            log.Printf("LOG: Node %d Shutting Down and being Freed\n", n.Id)
+                            //log.Printf("LOG: Node %d Shutting Down and being Freed\n", n.Id)
                             if (n.next == nil) {
                                 // This should mean the simulation has completed
-                                log.Println("LOG: Simulation Completed?")
+                                //log.Println("LOG: Simulation Completed?")
                             }
                             break
                         } else {
@@ -433,9 +433,7 @@ func (tl *TimeLine) TickForward(h *Hospital) bool {
     e := tl.Event.Get()
 
     tl.Now = e.Date()
-    //fmt.Println("Executing:\n", e, "\nNow:", tl.Now)
     e.Execute(h)
-    //fmt.Println("Executed")
     tl.History.PushBack(e)
 
     tl.Event.free()
@@ -672,32 +670,41 @@ func init() {
 }
 
 func HomeHandler(w http.ResponseWriter, r *http.Request) {
-    fmt.Println("Serving Graph")
-    if homepage == "" {
-        log.Println("LOG: Compiling the HTML Page")
-        homepage = compilePage(temp)
-        log.Println("LOG: Page Compiled!")
-    }
     io.WriteString(w, homepage)
 }
 
+func SimulationHandler(w http.ResponseWriter, r *http.Request) {
+    vars := strings.Split(r.URL.Path[5:], "/", 3)
+    if len(vars) != 3 {
+        io.WriteString(w, "Invalid Simulation Parameters")
+        return
+    }
+
+    //TODO: Help user realize their errors
+    spawnTime, err := strconv.Atof64(vars[0])
+    if err != nil { spawnTime = 60; }
+    numNurse, err := strconv.Atoi(vars[1])
+    if err != nil { numNurse = 1; }
+    numDoc, err := strconv.Atoi(vars[2])
+    if err != nil { numDoc = 1; }
+
+    fmt.Println("Running Requested Simulation....")
+    fmt.Println(spawnTime, numNurse, numDoc)
+    h := NewHospital(spawnTime, numNurse, numDoc)
+    h = <-h.StartSimulation()
+    fmt.Println("Simulation Completed....")
+    io.WriteString(w, compilePage(h.Patients))
+}
+
 var homepage string
-var temp []*Patient
 
 func main() {
     err := loadTemplates()
     if err != nil { fmt.Println(err); return; }
 
+    homepage = "<a href=\"/sim/10/1/1\">Basic Simulation</a><br /><table><tr><td>SpawnTime</td><td>10 mins</tr><tr><td># Nurses</td><td>1</td></tr><tr><td># Doctors</td><td>1</td></tr></table>"
+
     // Simulation
-    h := NewHospital(10, 1, 1)
-
-    fmt.Println("Running the Sim....")
-    simComplete := h.StartSimulation()
-    h = <-simComplete
-    fmt.Println("Simulation Completed....")
-
-    temp = h.Patients
-
     wd, err := os.Getwd();
     if err != nil { log.Println("ERROR: Failed to get Working Directory", err); return }
 
@@ -705,7 +712,7 @@ func main() {
     //if err != nil { fmt.Println("ERROR:", err); return; }
 
     http.Handle("/assets/", http.FileServer(wd, ""))
-    //http.Handle("/", http.FileServer(wd, ""))
+    http.HandleFunc("/sim/", http.HandlerFunc(SimulationHandler))
     http.HandleFunc("/", http.HandlerFunc(HomeHandler))
 
     err = http.ListenAndServe(":6060", nil);

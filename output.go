@@ -5,6 +5,7 @@ import (
     "template"
     "bytes"
     "fmt"
+    "log"
 )
 
 var PatientsTable *template.Template
@@ -20,12 +21,12 @@ type PatientsOutput struct {
 
 func loadTemplates() (err os.Error) {
     PatientsTable, err = template.ParseFile("assets/patients.tpl", nil)
-    if err != nil { fmt.Println("ERROR: Loading patients.tpl", err); return err}
-    fmt.Println("LOG: patients.tpl Loaded")
+    if err != nil { log.Println("ERROR: Loading patients.tpl", err); return err}
+    log.Println("LOG: patients.tpl Loaded")
 
     PatientsPage, err = template.ParseFile("assets/page.tpl", nil)
-    if err != nil { fmt.Println("ERROR: Loading page.tpl", err); return err}
-    fmt.Println("LOG: page.tpl Loaded")
+    if err != nil { log.Println("ERROR: Loading page.tpl", err); return err}
+    log.Println("LOG: page.tpl Loaded")
     return nil
 }
 
@@ -35,13 +36,13 @@ type Table struct {
 
 func compilePage(patients []*Patient) string {
 
-    fmt.Println("LOG: Totaling the Patients Information")
+    //fmt.Println("LOG: Totaling the Patients Information")
     cdata := make([](map[string]float64), len(patients))
     for i := 0; i < len(patients); i++ {
         cdata[i] = patients[i].TotalUp()
     }
 
-    fmt.Println("LOG: Coupling Data for the Template")
+    //fmt.Println("LOG: Coupling Data for the Template")
     n := len(cdata)
     tplData := &PatientsOutput{make([]string, n), make([]float64, n), make([]float64, n), make([]float64, n), make([]float64, n)}
     for i := 0; i < len(cdata); i++ {
@@ -52,17 +53,17 @@ func compilePage(patients []*Patient) string {
         tplData.WithNurse[i] = cdata[i]["WithNurse"]
     }
 
-    fmt.Println("LOG: Executing the Table Template")
+    //fmt.Println("LOG: Executing the Table Template")
     b := bytes.NewBuffer(make([]uint8,0,4096))
     err := PatientsTable.Execute(b, tplData)
-    if err != nil { fmt.Println("ERROR: Applying PatientsTable template", err); return ""; }
+    if err != nil { log.Println("ERROR: Applying PatientsTable template", err); return ""; }
 
 
-    fmt.Println("LOG: Executing the Page")
+    //fmt.Println("LOG: Executing the Page")
     Table := map[string]string { "Table": b.String() }
     b = bytes.NewBuffer(make([]uint8,0,4096))
     err = PatientsPage.Execute(b, Table)
-    if err != nil { fmt.Println("ERROR: Applying PatientsPage template", err); return ""; }
+    if err != nil { log.Println("ERROR: Applying PatientsPage template", err); return ""; }
 
     return b.String()
 }
