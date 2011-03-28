@@ -3,6 +3,7 @@ package main
 import (
     "os"
 	"fmt"
+    "log"
     "container/list"
     "math"
     "http"
@@ -75,7 +76,7 @@ func (s *State) Finalize() {
     s.IsLive = false
     s.Ended = s.TimeLine.Now
     if s.ElapsedTime() < 0 {
-        fmt.Println("ERROR: Elasped Time of 0")
+        log.Println("ERROR: Elasped Time of 0")
     }
 }
 
@@ -92,11 +93,10 @@ func (s *Sim) SetNextState(status string) {
 }
 
 func (s *Sim) TotalUp() (map[string]float64) {
-    fmt.Println("LOG: Totaling the State's Elapsed Time for\n-History:", s)
+    log.Println("LOG: Totaling the State's Elapsed Time for\n-History:", s)
     totals := make(map[string]float64)
     for e := s.History.Front(); e != nil; e = e.Next() {
         state := e.Value.(*State)
-        fmt.Println("History:", state)
         n, ok := totals[state.Status]
         if ok {
             totals[state.Status] = n + state.ElapsedTime()
@@ -104,7 +104,7 @@ func (s *Sim) TotalUp() (map[string]float64) {
             totals[state.Status] = state.ElapsedTime()
         }
     }
-    fmt.Println("LOG: Totaling Completed for")
+    log.Println("LOG: Totaling Completed for")
     return totals
 }
 
@@ -134,9 +134,9 @@ type Patient struct {
 
 func (s *Patient) TotalUp() (map[string]float64) {
     if s.Status != "Finished" {
-        fmt.Println("ERROR: Patient never Processed", s.String())
+        log.Println("ERROR: Patient never Processed", s.String())
     }
-    fmt.Println("LOG: Totaling the State's Elapsed Time for\n-History:", s)
+    log.Println("LOG: Totaling the State's Elapsed Time for\n-History:", s)
     totals := make(map[string]float64)
     for e := s.History.Front(); e != nil; e = e.Next() {
         state := e.Value.(*State)
@@ -148,7 +148,7 @@ func (s *Patient) TotalUp() (map[string]float64) {
             totals[state.Status] = state.ElapsedTime()
         }
     }
-    fmt.Println("LOG: Totaling Completed for")
+    log.Println("LOG: Totaling Completed for")
     return totals
 }
 
@@ -241,14 +241,14 @@ func (tl *TimeLine) String() string {
 
 // Optimize These Numbers
 const (
-    FreeListMax = 100
+    FreeListMax = 20
     DeferMax = 1000
 )
 
 var FreeList chan *EventNode = make(chan *EventNode, FreeListMax)
 
 type EventNode struct {
-    Id uint
+    Id int64
     next *EventNode
     Next chan *EventNode
     deferredEvents chan Event
@@ -261,17 +261,17 @@ type EventNode struct {
 
 func (n *EventNode) DeferEvent(e Event) {
     if n == nil {
-        fmt.Println("ERROR: An event is being created after the event chain has completed")
+        log.Println("ERROR: An event is being created after the event chain has completed")
         panic("Attemped Defer when EventNode == nil")
     }
     if n.isFinalized {
         if n.next == nil {
-            fmt.Println("WARNING: n.next == nil")
+            log.Println("WARNING: n.next == nil")
         } else {
-            fmt.Println("LOG: an Event generated this", e)
+            log.Printf("LOG: Event:\n%v Generated:\n%v\n", n.value, e)
         }
     } else {
-        fmt.Println("LOG: Initial Event created", e)
+        log.Println("LOG: Initial Event created", e)
     }
     n.deferredEvents <- e
 }
@@ -282,7 +282,6 @@ func (n *EventNode) Get() Event {
 
 func (n *EventNode) makeNext(e Event) {
     n.next = newEventNode(true)
-    n.next.Id = n.Id + 1
     go n.next.Listen()
     n.next.deferredEvents <- e
 }
@@ -305,11 +304,11 @@ func (t TurnCompleted) Execute(h *Hospital) { return; }
 
 func (n *EventNode) free() {
     n.deferredEvents <- TurnCompleted(n.Id)
-    FreeList <- n
+    go func() { FreeList <- n; }()
 }
 
 func (e *EventNode) wipeClean() *EventNode {
-    e.Id = 0
+    //e.Id = 0
     e.isFinalized = false
     // TODO: See if this is nessacary
     e.newChannels()
@@ -327,31 +326,29 @@ func (e *EventNode) newChannels() {
     e.Next = make(chan *EventNode)
 }
 
+var totalEventNodes int64
+
 func newEventNode(force bool) (e *EventNode) {
-    fmt.Println("LOG: New Node Requested", force)
+    log.Println("LOG: New Node Requested")
     select {
     case e = <-FreeList:
-        e.wipeClean()
-        return e
     default:
         if force {
-            return ( &EventNode{} ).wipeClean()
+            log.Println("LOG: EventNode forced Creation")
+            e = &EventNode{}
         } else {
-            e := <-FreeList
-            e.wipeClean()
-            return e
+            log.Println("LOG: Waiting for a free EventNode")
+            e = <-FreeList
         }
     }
-    return nil
-}
-
-func NewEventNodeList(events []Event) *EventNode {
-    // Log how many times this is called
-    if events == nil {
-        return newEventNode(false)
+    if e.Id == 0 {
+        // This is a new Unseen EventNode, Tag it
+        totalEventNodes++
+        log.Println("LOG: TotalEvent Nodes Existing =", totalEventNodes)
+        e.Id = totalEventNodes
     }
-    // Create a Group of nodes
-    return nil
+    e.wipeClean()
+    return
 }
 
 // Conditional Setters
@@ -367,7 +364,7 @@ func setAndCreateNextNode(n *EventNode, e Event) {
         n.value = e
         e = temp
     }
-    fmt.Println("LOG: Next node is being created during a set operation")
+    log.Println("LOG: Next node is being created during a set operation")
     n.makeNext(e)
 }
 
@@ -404,10 +401,10 @@ func (n *EventNode) Listen() {
                     for e := range n.deferredEvents {
                         if e.Type() == "TurnCompleted" {
                             // This is the signal that no new events can be generated on n.value.Date() which is Now
-                            fmt.Printf("LOG: Node %d Shutting Down and being Freed\n", n.Id)
+                            log.Printf("LOG: Node %d Shutting Down and being Freed\n", n.Id)
                             if (n.next == nil) {
                                 // This should mean the simulation has completed
-                                fmt.Println("LOG: Simulation Completed?")
+                                log.Println("LOG: Simulation Completed?")
                             }
                             break
                         } else {
@@ -420,6 +417,7 @@ func (n *EventNode) Listen() {
                     }
                     // Now that the turn is completed we can pass off the value of n.next
                     n.Next <- n.next
+                    return
                 }
             }
         }
@@ -428,7 +426,7 @@ func (n *EventNode) Listen() {
 
 func (tl *TimeLine) TickForward(h *Hospital) bool {
     if tl.Event == nil {
-        fmt.Println("LOG: Simulation Completed")
+        log.Println("LOG: Simulation Completed")
         return false
     }
     e := tl.Event.Get()
@@ -444,7 +442,7 @@ func (tl *TimeLine) TickForward(h *Hospital) bool {
     return true
 }
 
-func (tl *TimeLine) PushFutureEvent(futureEvent Event) {
+func (tl *TimeLine) SpawnFutureEvent(futureEvent Event) {
     tl.Event.DeferEvent(futureEvent)
 }
 
@@ -475,18 +473,21 @@ func (w *WaitingRoom) AddPatient(p *Patient, h *Hospital) {
             // Check and Assign this Patient to a Nurse
             if !h.AssignNurse(p) {
                 // No Nurse Available
-                p.SetNextState("WaitingForNurse")
-                w.q[p.Priority].PushBack(p)
+                w.enque(p)
             }
             return
         } else if w.q[i].Len() > 0 && i <= p.Priority {
             // Queue in a Higher Priority already has a Patient Waiting
             // Just Enque this poor Sucker
-            p.SetNextState("WaitingForNurse")
-            w.q[p.Priority].PushBack(p)
+            w.enque(p)
             return
         }
     }
+}
+
+func (w *WaitingRoom) enque(p *Patient) {
+    p.SetNextState("WaitingForNurse")
+    w.q[p.Priority].PushBack(p)
 }
 
 func (w *WaitingRoom) Next() *Patient {
@@ -596,7 +597,7 @@ func (h *Hospital) AssignDoctorToPatient(p *Patient) {
         doc.SetNextState("Busy")
         p.SetNextState("WithDoctor")
         futureEventDate := float64(now) + (p.ProcessingTime*.25)
-        h.TimeLine.PushFutureEvent(&DoctorFreed{doc, p, Date(futureEventDate)})
+        h.TimeLine.SpawnFutureEvent(&DoctorFreed{doc, p, Date(futureEventDate)})
     } else {
         // Put the Patient in Waiting
         p.SetNextState("WaitingForDoctor")
@@ -619,7 +620,7 @@ func (h *Hospital) DoctorFreed(d *Doctor) {
         // Get the Next Patient
         p := ele.Value.(*Patient)
         h.WaitingForDoctor.Remove(ele)
-        h.TimeLine.PushFutureEvent(NewDoctorFreed(doc, p, h.TimeLine.Now))
+        h.TimeLine.SpawnFutureEvent(NewDoctorFreed(doc, p, h.TimeLine.Now))
     } else {
         // No Patients Waiting, idleing Doctor d
         d.SetNextState("Idle")
@@ -639,7 +640,7 @@ func (h *Hospital) NurseFreed(n *Nurse) {
             // The newly Freed one we must put it in Idle state
             n.SetNextState("Idle")
         }
-        h.TimeLine.PushFutureEvent(NewNurseFreed(nurse, p, h.TimeLine.Now))
+        h.TimeLine.SpawnFutureEvent(NewNurseFreed(nurse, p, h.TimeLine.Now))
     } else {
         // NO Patients waiting, this nurse is freed to play minecraft
         n.SetNextState("Idle")
@@ -653,7 +654,7 @@ func (h *Hospital) Report() (r map[string]string) {
 
 func (h *Hospital) AssignNurse(p *Patient) bool {
     if n := h.FreeNurse(); n != nil {
-        h.TimeLine.PushFutureEvent(NewNurseFreed(n, p, h.TimeLine.Now))
+        h.TimeLine.SpawnFutureEvent(NewNurseFreed(n, p, h.TimeLine.Now))
         return true
     }
     return false
@@ -662,7 +663,7 @@ func (h *Hospital) AssignNurse(p *Patient) bool {
 func init() {
     // Allocate EventNodes
     go func() {
-        for i := 0; i < FreeListMax; i++ {
+        for i := 0; i < FreeListMax/2; i++ {
             FreeList <- new(EventNode).wipeClean()
         }
     }()
@@ -671,9 +672,9 @@ func init() {
 func HomeHandler(w http.ResponseWriter, r *http.Request) {
     fmt.Println("Serving Graph")
     if homepage == "" {
-        fmt.Println("LOG: Compiling the HTML Page")
+        log.Println("LOG: Compiling the HTML Page")
         homepage = compilePage(temp)
-        fmt.Println("LOG: Page Compiled!")
+        log.Println("LOG: Page Compiled!")
     }
     io.WriteString(w, homepage)
 }
@@ -696,7 +697,7 @@ func main() {
     temp = h.Patients
 
     wd, err := os.Getwd();
-    if err != nil { fmt.Println("ERROR: Failed to get Working Directory", err); return }
+    if err != nil { log.Println("ERROR: Failed to get Working Directory", err); return }
 
     //indexHtml, err := ioutil.ReadFile(wd + "/assets/index.html")
     //if err != nil { fmt.Println("ERROR:", err); return; }
@@ -706,8 +707,8 @@ func main() {
     http.HandleFunc("/", http.HandlerFunc(HomeHandler))
 
     err = http.ListenAndServe(":6060", nil);
-    fmt.Println("LOG: Server Shutting Down")
+    log.Println("LOG: Server Shutting Down")
 
-    if err != nil { fmt.Println("ERROR:", err); }
+    if err != nil { log.Println("ERROR:", err); }
 
 }
